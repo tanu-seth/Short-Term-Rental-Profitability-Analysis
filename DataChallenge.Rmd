@@ -1,0 +1,612 @@
+---
+title: "Analyzing Profitability for Short-term Rentals"
+output:
+  html_document:
+     toc: true # table of content true
+     toc_depth: 4  # upto three depths of headings (specified by #, ## and ###, ####)
+     number_sections: false  ## if you want number sections at each table header
+      # many options for theme, this one is my favorite.
+     highlight: tango  # specifies the syntax highlighting style
+---
+
+# Executive Summary
+
+## Problem Statement 
+
+Build a data product to assist a real estate company to understand which zip codes are profitable for short term rentals within New York City.
+
+## Data Sources
+
+*  Cost Data : Estimate of value for two-bedroom properties provided by Zillow.
+*  Revenue Data : AirBnB Data Set with relevant short term rental information.
+
+## Assumptions Made:
+
+1. The investor will pay for the property in cash (i.e. no mortgage/interest rate will need to be accounted for).
+2. The time value of money discount rate is 0% (i.e. $1 today is worth the same 100 years from now).
+3. All properties and all square feet within each locale can be assumed to be homogeneous (i.e. a 1000 square foot property in a locale such as Bronx or Manhattan generates twice the revenue and costs twice as much as any other 500 square foot property within that same locale.)
+
+**Extra Assumptions**:
+
+4. The company is planning to buy the property in 2019.
+5. There is no increase in rent Year over Year for airbnb listings.
+6. The price host is charging per night is for the entire property irrespective of private room/entire house listing.
+7. Yearly Maintenance of property does not exceed around a month's rent.
+8. Property repair for damage caused by tenants is totally covered by the security deposit charged. 
+9. Vacancy rate remains consistent across years. No seasonality.
+10. Properties are active listings for 365 days.
+
+
+## Factors considered 
+
+Four factors are considered while estimating the profitability of investment in short term rental propertys. Rental Demand and competition is something which cannot be controlled but hugely impacts the success of rental business. Gross monthly income is calculated based on the average rent per month of a 2 bedroom property in a particular zip. It is again an estimate of what people are willing to pay for that area in an average. Payback time is calculated based on the purchase price of property and the gross annual income. 
+
+1. Rental Demand - Determined by Average Vacancy Rate in the area
+2. Competition - Determined by percentage of superhosts in the area
+3. Gross Monthly Income - Determined by average monthly rent in the area
+4. Payback Time in Years - Determined by property purchase price and gross annual income
+
+Other parameters like cleaniless, amenities, host behavior can be controlled and modified based on the budget available and long term business plan and can ultimately be used to predict a competitive price for our listing. Hence, I did not include them in analysis for now.
+
+## Conclusion
+
+Zipcodes to invest in:
+
+* **10025**  - The payback time is close to 16 years as compared to the least for all zipcodes - 13 years(zip 11434). Based on the gross monthly income of $9134 , this zipcode will be overall more profitable for long term. It also among the top 5 in demand and competition analysis.
+
+* **10036** - The payback time is 24 years and Effective gross income is close to $8000.
+
+* **10011** - This zipcode has only 8% superhosts , hence adequate competition. The payback time is 26years and Gross monthly 
+
+
+# Setup 
+
+**Libraries Used**: tidyverse , dplyr , ggplot2 , plotly , data.table , DataExplorer , kableExtra , stringr
+
+```{r,include=FALSE}
+# set of packages to be loaded 
+
+packages=c('tidyverse','dplyr','ggplot2','plotly','data.table','DataExplorer','kableExtra','stringr','DT','rio')
+
+# iterating over packages list to intsall the uninstalled packages
+# Code Reference : stackoverflow
+
+newPackages <- packages[!(packages %in% installed.packages()[,"Package"])]
+if(length(newPackages)) install.packages(newPackages, dependencies = T)
+
+inst = lapply(packages, require,character.only = TRUE)
+cat("library loaded succesfully!")
+
+# function to clean price data - removes $(dollar) ,(comma) and converts to numeric
+clean_price <- function(df, col)
+{ 
+  data<-df[,which(colnames(df)==col)]
+  clean_data <- str_replace_all(data, fixed("$"), "")
+  clean_data <-as.numeric(str_replace_all(clean_data, fixed(","), ""))
+  return(clean_data)
+}
+
+```
+
+# Loading Data
+
+## Importing Data
+
+Importing the datasets provided into the dataframe zillow_orig , airbnb_orig. Using the copy dataframes for further analysis.
+
+```{r}
+
+# reading zillow data
+zillow_orig <- fread("Zip_Zhvi_2bedroom.csv",na.strings = "",stringsAsFactors = T)
+zillow <- copy(zillow_orig)
+# reading airbnb data
+airbnb_orig <- fread("listings.csv",na.strings = "",stringsAsFactors = T)
+airbnb <- copy(airbnb_orig)
+
+```
+
+## Parameter and Function Declaration
+
+The parameters provided in this section can be changed based on the requirement.
+**note** : **The top zipcodes might not remain same in case any of the parameters below is altered**
+
+* **property_buy_year** -  change it to the year when you want to buy the property
+
+* **zillow_start_date , zillow_end_date** - These dates are used to filter the years on which analysis of average increase in zillow property purchase price is done. The average percent increase per year is then used to predict the property price in property_buy_year ( Currently last 10 years data is used for analysis)
+**note** : comment out line #172 in case the zillow start date > 2007-05 as the plot_missing value returns error with no missing value columns to display (when missing_value = TRUE is set)
+
+* **filter_city** - target city for analysis 
+
+* **airbnb_col_filters** -  relevant columns have been extracted here. Add other columns in quotes separated by comma if required
+
+* **filter_bedroom** - number of bedrooms in the target property analysis
+
+```{r}
+
+# Year when the company wants to buy the property
+property_buy_year <- 2019
+
+# Filter dates for house price change analysis for zillow
+zillow_start_date <- '2007-01'
+zillow_end_date <- '2016-12'
+
+# Name of the city to filter on
+filter_city <- 'New York'
+
+# airbnb listings data filter 
+airbnb_col_filter <- c('id','host_is_superhost','neighbourhood_cleansed','neighbourhood_group_cleansed','zipcode','property_type','room_type','accommodates','bathrooms','bedrooms','square_feet','price','weekly_price','monthly_price','security_deposit','cleaning_fee','guests_included','extra_people','calendar_updated','has_availability','availability_30','number_of_reviews','review_scores_location','reviews_per_month')
+
+# airbnb bedroom filter
+filter_bedroom <- 2
+
+```
+
+# Data Preparation 
+
+## Filtered Data
+**Preparing data based on filters**
+
+```{r}
+
+# Filtering zillow data based on parameter filter_city 
+# selecting the zipcodes for analysis
+
+zillow <- zillow %>% filter(City==filter_city) %>% select(zipcode=RegionName,county_name=CountyName,size_rank=SizeRank,zillow_start_date:zillow_end_date) 
+
+airbnb <- airbnb %>% select(airbnb_col_filter) %>% filter(zipcode %in% zillow$zipcode & bedrooms==filter_bedroom)
+
+#checking the dimensions of the data
+dim(zillow)
+dim(airbnb)
+```
+## Data Quality
+
+Checking the Data Quality of the filtered relevant data for both the datasets. 
+
+**Steps Followed**
+
+* Checking the head and tail of the data gives an idea about the starting and ending of the stored data. It is easier to identify observable parsing errors in case the data was automatically parsed.
+* Checking for duplicates
+* Missing value plot
+
+### Zillow Data quality analysis
+
+```{r}
+kable(head(zillow)) %>% kable_styling(bootstrap_options = c("striped", "hover", "responsive")) %>% scroll_box(width = "100%", height = "300px")
+```
+```{r}
+kable(head(zillow)) %>% kable_styling(bootstrap_options = c("striped", "hover", "responsive")) %>% scroll_box(width = "100%", height = "300px")
+```
+```{r}
+# checking for duplicates
+anyDuplicated(zillow)
+```
+
+```{r}
+plot_missing(zillow,missing_only = TRUE,title = 'Missing values in Zillow Filtered Data')
+```
+
+```{r}
+# names(zillow)
+# summary(zillow)
+# str(xillow)
+dim(zillow)
+```
+
+**Quality insights**
+
+* The dataset has a total of 25 rows and 123 columns (Wide format)
+* There are no duplicates
+* Each row is an observation
+* Each cell has one value
+* Column names are values (to be cleaned)
+* 5 columns ('2007-01','2007-02','2007-03','2007-04','2007-05') has missing values(to be handled)
+
+### Airbnb Data quality analysis
+```{r}
+dim(airbnb)
+```
+
+
+```{r}
+kable(head(airbnb)) %>% kable_styling(bootstrap_options = c("striped", "hover", "responsive")) %>% scroll_box(width = "100%", height = "300px")
+```
+
+```{r}
+kable(tail(airbnb)) %>% kable_styling(bootstrap_options = c("striped", "hover", "responsive")) %>% scroll_box(width = "100%", height = "300px")
+```
+```{r}
+anyDuplicated(airbnb)
+```
+
+```{r}
+plot_missing(airbnb,missing_only = TRUE,title = 'Missing values in airbnb Filtered Data')
+```
+
+
+**Quality insights**
+
+* The dataset has a total of 1565 rows and 24 columns
+* There are no duplicates
+* Each row is an observation
+* Each cell has one value
+* Column names are variables 
+* 9 columns have missing values(to be handled) 
+
+## Preparing the data for Analysis:
+
+### Zillow Data Cleaning
+
+I will be working on the price data for years '2007-01' to '2016-12' to get the average increase in price per year over the last deacde. Will use it to estimate the price of the house for the year when real estate company is planning to buy the property.
+
+**Steps follwed** : 
+* Finding YoY percent increase in median price of the house for each Zipcode.
+* Visualizing the pattern of YoY increase.
+* Finding the Avg increase in the median price per year for each zipcode.
+* Estimating the property price for property_buy_year( Assumption : property_buy_year = 2019 , can be changed in the parameter definition section)
+
+```{r}
+# Calculating YoY percent increase in median price
+
+zillow_yoy_price<-zillow %>% gather(year_month,price,zillow_start_date:zillow_end_date) %>% arrange(desc(zipcode)) %>% separate(col=year_month, into = c('year','month'),sep='-') %>% select(-month) %>% group_by(zipcode,  county_name,size_rank,year) %>% summarize(median_price_yr = median(price)) %>% mutate(median_price_yr=median_price_yr) %>% ungroup() %>% group_by(zipcode) %>% mutate(perc_inc = ((median_price_yr-lag(median_price_yr))/lag(median_price_yr))*100)  %>% ungroup()
+
+# zillow_yoy_price
+
+p <- ggplot(zillow_yoy_price,aes(x = year,y = median_price_yr,text=paste('year:',year,sep='\n',
+             'Zipcode:',zipcode,
+             'Median House Price:',median_price_yr,
+              '% inc in price over previous yr:',round(perc_inc,2)))) +
+  geom_point(aes(colour = factor(zipcode))) + 
+  xlab('Year') + 
+  ylab('Median price of the house - by Zipcode,year') + 
+  ggtitle('Median price change, percentage change Year over Year for a zipcode') + 
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank())+
+  labs(colour='Zipcode')
+
+ggplotly(p,tooltip = "text")  
+
+```
+**Each point represents a zipcode and it's property in a specific year. Hover over the points to see the details** 
+
+```{r}
+# calculating average percentage increase in median price per year
+
+Avg_inc_in_price<-zillow_yoy_price %>% group_by(zipcode) %>% summarize(avg_change = mean(perc_inc,na.rm = TRUE)) %>% mutate(avg_change=avg_change) %>% ungroup()
+
+# calculating the property price in property_buy_year
+
+zillow_final<- zillow_yoy_price %>% filter(year==2016)  %>% inner_join(Avg_inc_in_price) %>% mutate(estimate_2019_price = median_price_yr * ((1+(avg_change/100))**(property_buy_year-2016))) %>% select(zipcode,county_name,size_rank,estimate_2019_price)
+
+kable(head(zillow_final,10))  %>% kable_styling(bootstrap_options = c("striped", "hover", "responsive"))
+```
+
+### Airbnb Data Cleaning
+
+**Steps followed**
+
+* Removing variables that have more tha 70 % null values
+* Removing bedrooms as we already filtered on it
+* Removing security deposit and cleaning fee - Assumption regarding these  : cash flow is zero from these two sources as owner used the full amount to repair(in case of damage) / refund(in case of no damage) and cleaning fee(to clean the apartment)
+* Removing dollar and comma from the price data
+* Imputing the  missing values for review_scores_location,reviews_per_month by filling with nearest values in the neighbourhood_group_cleansed
+* Imputing superhost with 'f' for missing values as information about whether the user is superhost or not is not known
+
+```{r}
+airbnb <-airbnb %>% select(-'weekly_price',-'monthly_price',-'square_feet',-'security_deposit',-'cleaning_fee',-'bathrooms',-'bedrooms')
+
+
+airbnb$price = clean_price(airbnb,'price')
+
+airbnb[which(is.na(airbnb$host_is_superhost)),]$host_is_superhost<-'f'
+
+plot_missing(airbnb,missing_only = TRUE)
+
+```
+
+### Combining the dataset
+
+The airbnb and zillow_final datasets are merged using the zipcode field to create rent_price_data.
+
+```{r}
+# merging the datasets
+rent_price_data <- merge(airbnb,zillow_final,by="zipcode")
+
+```
+
+# Summary Statistics and Exploratory Data Analysis
+
+Summary Statistics of the data gives an overview of the data distribution. It is a quick way to catch some type of erroneous values. 
+
+```{r}
+kable(head(rent_price_data,10))  %>% kable_styling(bootstrap_options = c("striped", "hover", "responsive")) %>% scroll_box(width = "100%", height = "600px")
+```
+
+
+```{r}
+summary(rent_price_data)
+```
+
+**Observations**
+
+* About 15% of the properties overall are owned by superhosts 
+* Ranking of Neighbourhood_group_cleansed based on number of listings : Manhattan > Staten Island > Queens
+* Most common property type is : Apartment
+* Price variable has outliers 
+* More than 50% of peroperties are occupied for the next 30 days
+
+# Analysing variables with outliers
+
+## Analysis of Price per night
+
+Assumption: Price charged by the owner is the price per night for the property irrespective of the property type.
+
+
+```{r}
+p<- ggplot(data = rent_price_data, aes(x = "", y = price)) + 
+ geom_boxplot() + scale_y_log10() + coord_flip() + ylab('Price per night - scale log10') + labs(title='Boxplot of Price per night for properties') + xlab('')
+
+ggplotly(p)
+```
+
+There are outlier with price above 1000. Looking at the distribution of price per zipcode is a good idea here.
+
+```{r}
+
+p<-ggplot(data = rent_price_data) + geom_boxplot(mapping=aes(x=reorder(zipcode,price,FUN = median),y=price)) + scale_y_log10() + coord_flip() + theme(legend.position="none",axis.ticks.x = element_blank(),axis.ticks.y = element_blank()) +ylab('Price Per Night - scale log 10') + xlab('Zipcode') + labs(title='Boxplot of Price per night for properties by Zipcode')
+
+ggplotly(p)
+```
+
+
+Price can vary for apartments based on the services provided or the amenities provided which I have not considered for the analysis. The price data is generally right skewed. Based on the outliers above 3000 seem abnormal. These outliers are from the zipcodes who median price is below 600 . Hence I would be removing these observations.
+
+**Outlier Removal**
+
+```{r}
+# Removing properties where property price > 3000
+
+rent_price_data <-  rent_price_data %>% filter(price<=3000)
+dim(rent_price_data)
+```
+## Analysis of Number of listings
+
+Analysing Number of properties is an important task as we want to characterize the zipcode rentals based on the current rental properties in those zipcodes. If the count of property is too less, it is not a good idea to generalize the characteristics of those properties for the zipcode.
+
+```{r}
+# summarizing the property count by zipcode
+
+by_zip <- rent_price_data %>% select(price,estimate_2019_price,zipcode) %>% group_by(zipcode) %>% summarize(property_count  = n(), avg_rent = mean(price),median_property_price = median(estimate_2019_price)) %>% ungroup()
+
+p<-ggplot(by_zip,aes(x='',y=property_count)) + geom_boxplot() + coord_flip() +xlab('') + labs(title = 'Box plot of property count')  + ylab('Property Count')
+
+ggplotly(p)
+```
+```{r}
+# summarizing the property count by neighbourhood group
+
+by_neighbour <- rent_price_data %>% group_by(neighbourhood_group_cleansed) %>% summarize(property_count_byn =n()) %>% ungroup()
+
+p<-ggplot(by_neighbour,aes(x=neighbourhood_group_cleansed,y=property_count_byn)) + geom_col(fill='steelblue') + labs(title = 'Property count by Neighbourhood group') + xlab('Neighbourhood Group') + ylab('Property Count')
+
+ggplotly(p)
+```
+
+
+**Outlier Removal**:
+
+```{r}
+quantile(by_zip$property_count,c(0.10,0.20,0.30,0.50,0.75,0.90))
+```
+
+Removing zipcodes that have less than 4 properties from our analysis.
+
+```{r}
+# Removing zipcodes with properties less than 4
+
+zip_filter <- by_zip %>% filter(property_count> 4) %>% select(zipcode)
+zip_filter
+
+rent_price_data <- rent_price_data %>% filter(zipcode %in% zip_filter$zipcode)
+
+```
+
+
+# Estimating Zipcodes to invest in for profitability :
+
+Used 4 factors to determine the profitablity of investment based :
+
+## Rental Demand ( Metric used: Avg Vacancy Rate/ Occupancy Rate)
+
+It determines how often the rentals are booked in this area. Calculated the rental demand based on the vacancy rate of the next 30 days. Assuming all the major bookings for the next 30 days are done. Availability_30 will give a more concise idea about the occupancy/ vacancy rate than avaialable_90 or available_365 as it is less likely people would book a rental a year in advance.
+
+The vacancy rate of the rentals in a zipcode gives an idea about the demand of the rentals in that area. Calculating vacancy rate using the availability_30
+
+**Formula used**
+
+*Vacancy_rate = (availability_30 x 100)/30 *
+*Occupancy_rate = 100-vacancy_rate *
+                
+
+```{r}
+
+# calculating the avg_vacancy_rate and avg_occupancy_rate for zipcodes
+demand_metrics <- rent_price_data %>% select(zipcode,availability_30) %>% mutate(vacancy_rate = (availability_30*100)/30 , occupancy_rate = 100-vacancy_rate)
+
+demand_metrics_byzip <- demand_metrics %>% group_by(zipcode) %>% summarize(avg_vacancy_rate =  mean(vacancy_rate), avg_occupancy_rate = mean(occupancy_rate)) %>% ungroup()
+
+demand_metrics_byzip
+#mean(demand_metrics_byzip$avg_vacancy_rate)
+
+# plotting the Vacancy rate based
+
+p<-demand_metrics_byzip %>%
+  arrange(desc(avg_vacancy_rate)) %>%   
+  mutate(zipcode=factor(zipcode, levels=zipcode)) %>% 
+ggplot( aes(x=zipcode, y=avg_vacancy_rate)) + 
+  geom_point(size=3,color ='steelblue') + 
+  geom_segment(aes(x=zipcode, 
+                   xend=zipcode, 
+                   y=0, 
+                   yend=avg_vacancy_rate)) + 
+  labs(title="Demand Analysis based on Vacancy rate") + 
+  theme(axis.text.x = element_text(angle=65, vjust=0.6)) + coord_flip() + ylim(0,100)
+ggplotly(p) 
+
+```
+*Less vacancy rate => More Demand*
+
+
+## Competition (Metric used : Percentage of Superhosts by zip:
+
+As per Airbnb, super hosts are someone who provide a shining example for other hosts, and provide extraordinary experiences for their guests.The number of superhosts give an idea about the competition in the zipcode. Having decent amount of competition is good for a business. Investing in an area with more competition might not be a good idea at the initial stages of a business.   
+
+**Formula used**
+
+*percent_superhost = Number of properties with superhost /total number of properties *
+
+```{r}
+# Since host_is_superhost a categorical variable with value f and t we will convert it to a binary variable 
+
+host_data <- rent_price_data %>% group_by(zipcode) %>% summarize(total_superhosts = sum(ifelse(host_is_superhost=='t',1,0)),total = n()) %>% mutate(percent_superhost = (total_superhosts*100)/total) %>% arrange(desc(percent_superhost)) %>% ungroup()
+
+# Ploting the superhost percentage per zipcode
+
+p<-host_data %>%
+  arrange(desc(percent_superhost)) %>%   
+  mutate(zipcode=factor(zipcode, levels=zipcode)) %>% 
+  ggplot( aes(x=zipcode, y=percent_superhost)) + 
+  geom_point(size=3,color ='steelblue') + 
+  geom_segment(aes(x=zipcode, 
+                   xend=zipcode, 
+                   y=0, 
+                   yend=percent_superhost)) +
+  xlab('Zipcode') + 
+  ylab('Percentage of Superhosts') + 
+  labs(title='Analyzing market competition') + coord_flip() + ylim(0,100)
+
+ggplotly(p)
+```
+*Less Competition => Better for investing*
+
+## Effective Gross Income Per Month
+
+The Effective Gross Income is the income you should expect to receive from the property after accounting for vacancy losses.Effective gross income from the rental is basically what the effectice income owner gets from the rent per month. 
+
+**Formula used**
+
+*gross_monthly_income = avg_rent x (30 - ((vacancy_rate/100) x 30))*
+
+```{r}
+
+# calculating gross_monthly_income
+
+ avg_rent_data <- rent_price_data %>% group_by(zipcode) %>% summarize(avg_rent = mean(price)) %>% ungroup() 
+
+ 
+effective_income_monthly <- avg_rent_data %>% merge(demand_metrics_byzip,by='zipcode') %>% mutate(gross_monthly_income = avg_rent*(30-((avg_vacancy_rate*30)/100))) %>% select (zipcode,gross_monthly_income)
+
+
+# plotting average gross_monthly_income across zipcodes
+
+p<-effective_income_monthly %>%
+  arrange(gross_monthly_income) %>%   
+  mutate(zipcode=factor(zipcode, levels=zipcode)) %>% 
+  ggplot(aes(x=zipcode, y=gross_monthly_income)) + 
+ geom_point(size=3,color ='steelblue') + 
+  geom_segment(aes(x=zipcode, 
+                   xend=zipcode, 
+                   y=0, 
+                   yend=gross_monthly_income)) +
+ 
+  xlab('Zipcode') + 
+  ylab('Effective gross monthly income (in $) ') + 
+  labs(title='Analyzing Effective Gross Monthly income (rent only)') + coord_flip() + ylim(0,10000)
+
+ggplotly(p)
+```
+
+## Payback Time in years
+
+Payback time is also an important factor to consider when it comes to short-term rental investment.
+Assumption : Maintainence cost per year = One month rent of the rental.
+
+**Formula used**
+
+*Effective Annual Income  =  (gross_monthly_income x 12 ) - (price x 30)*
+
+```{r}
+# calculating effective annual income
+
+annual_income_data <- effective_income_monthly %>% merge(avg_rent_data,by='zipcode') %>% mutate(gross_annual_income = (gross_monthly_income*12)-(avg_rent*30)) %>% select(zipcode,gross_annual_income)
+        
+# avg payback time across zipcodes   
+
+payback_data<-annual_income_data  %>% merge(zillow_final,by='zipcode') %>% mutate(payback_time = estimate_2019_price/gross_annual_income)  %>% select(zipcode,payback_time)   
+
+# Ploting the avg paybacktime across zipcodes
+
+p<-payback_data %>%
+  arrange(desc(payback_time)) %>%   
+  mutate(zipcode=factor(zipcode, levels=zipcode)) %>% 
+  ggplot(aes(x=zipcode, y=payback_time)) + 
+ geom_point(size=3,color ='steelblue') + 
+  geom_segment(aes(x=zipcode, 
+                   xend=zipcode, 
+                   y=0, 
+                   yend=payback_time)) +
+ 
+  xlab('Zipcode') + 
+  ylab('Payback time (in years) ') + 
+  labs(title='Analyzing payback time') + coord_flip() 
+
+ggplotly(p)
+```
+
+## Merging all the metrics together
+
+Considering all the metrics together
+
+```{r}
+# Saving the Final metrics in a dataframe
+final_metrics_byzip<-demand_metrics_byzip %>% select(zipcode,avg_vacancy_rate)%>% merge(host_data %>% select(zipcode,percent_superhost),by='zipcode') %>%  merge(effective_income_monthly,by='zipcode') %>%merge(payback_data,by='zipcode') 
+
+
+datatable(final_metrics_byzip %>% mutate_if(is.numeric, round, 2),filter = 'top',options = list(
+  order = list(list(2, 'asc'), list(3, 'desc'),list(4, 'asc'),list(5, 'desc'))))
+
+```
+*Select the up/down arrow to see the ranking based on a particular factor*
+
+# Conclusion
+
+Top 5 Zip codes based on
+
+* Demand - 11217, 10025, 11215, 11231, 10128
+* Competition - 10128, 10028, 10021, 10011, 10025
+* Effective Gross Income - 10011, 10025, 10014, 10013,10036
+* Payback - 11434, 10305, 10025, 10036, 10022
+
+Out of the 4 factors Payback time and Gross Effective Income should be given priority. Rental demand for most of the zipcodes look decent and only few zipcodes who made to the top 5 list of factors above, had vacancy rate > 25 %.
+
+**Overall I would recommend investing in the following zipcodes** 
+
+* 10025  - The payback time is close to 16 years as compared to the least for all zipcodes - 13 years(zip 11434). Based on the gross monthly income of $9134 , this zipcode will be overall more profitable for long term. It also among the top 5 in demand and competition analysis.
+
+* 10036 - The payback time is 24 years and Effective gross income is close to $8000.
+
+* 10011 - This zipcode has only 8% superhosts , hence adequate competition. The payback time is 26years and Gross monthly 
+
+
+# Future Work
+
+* Use timeseries forecasting to predict the property price
+* Learning the trend of number of extra guests in the neighbourhood and use include it in the rent
+* Considering the increase in rent per month for the airbnb rental
+* Weighted rank of the zipcodes based on the parameters
+* Locatinon Review by user - Weighted rank of the number of reviews and the rating to determine the most appreciated location
+* Considering additional data - crime rate in the area and vacation spots nearby.
+
+
+
