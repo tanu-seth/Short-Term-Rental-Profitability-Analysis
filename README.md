@@ -1,5 +1,9 @@
 # Short-Term-Rental-Profitability-Analysis
  
+### Link to R file: 
+Check out the code at rpubs
+https://rpubs.com/tanuseth/short_term_rentals_profitability
+ 
 ### Problem Statement
 Build a data product to assist a real estate company to understand which zip codes are profitable for short term rentals within New York City.
 
